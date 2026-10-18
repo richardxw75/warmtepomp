@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verbruik Warmtepomp</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<!-- =====================================================================
+     CONFIGURATIE – pas alleen dit blok aan
+     ===================================================================== -->
+<script>
+const CONFIG = {
+  title: "Verbruik Warmtepomp",
+
+  // OAuth-client-ID (type "Webtoepassing") uit Google Cloud Console.
+  clientId: "7745213676-ucrj0qfk7ss2g4qpalv462196cvu599p.apps.googleusercontent.com",
+
+  // Volledig adres of alleen het ID van de Google Spreadsheet.
+  // Let op: het moet een echte Google Spreadsheet zijn, geen .xlsx in Drive.
+  spreadsheet: "https://docs.google.com/spreadsheets/d/1p6fr1KI61ZnbH47-vwV8QLxzyu97goUxSLXBfFYJSFI/edit?usp=sharing",
+
+  // Naam van het tabblad. Laat leeg om het tabblad uit het adres (gid=...) of anders het eerste tabblad te gebruiken.
+  sheetName: "",
+
+  // Optioneel: kopnaam van de datumkolom. Laat leeg voor automatisch (kop met "datum" of "date").
+  dateColumn: "",
+
+  scope: "https://www.googleapis.com/auth/spreadsheets",
+};
+</script>
+
+<style>
+  :root {
+    --bg: #f3f6f6; --card: #ffffff; --ink: #15232b; --muted: #5a6a73;
+    --line: #d7dfe2; --soft: #e5ecee; --accent: #0b6e6e; --accent-ink: #ffffff;
+    --ok: #17744a; --err: #b42318; --warn: #8a5a00; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1619; --card: #162229; --ink: #e8eff2; --muted: #93a4ad;
+      --line: #2a3a44; --soft: #22323c; --accent: #52b8b4; --accent-ink: #062321;
+      --ok: #55c78f; --err: #ff8a7d; --warn: #f1c35a; --warn-bg: #3a2f10;
+    }
+  }
+  html { background: var(--bg); }
+  body { font-family: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.1rem 1.25rem; }
+  .card h2 { font-size: 1rem; font-weight: 650; margin-bottom: .9rem; }
+  .lbl { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; font-size: .875rem; font-weight: 550; margin-bottom: .35rem; }
+  .lbl .sub { color: var(--muted); font-weight: 400; font-size: .8rem; }
+  .inp {
+    width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 10px; padding: .6rem .75rem; font: inherit; font-size: 1rem; min-height: 2.75rem;
+  }
+  .inp:focus-visible, .btn:focus-visible, .scale-track button:focus-visible, .chip:focus-visible, .rowbtn:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .inp[readonly] { color: var(--muted); }
+  textarea.inp { min-height: 5.5rem; resize: vertical; }
+  .unit { position: relative; }
+  .unit .inp { padding-right: 4.6rem; }
+  .unit span { position: absolute; right: .8rem; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: .8rem; pointer-events: none; }
+
+  .scale-track { display: grid; gap: 4px; }
+  .scale-track button {
+    height: 2.75rem; border-radius: 7px; background: var(--soft); color: var(--muted);
+    border: 0; font: inherit; font-size: .78rem; font-weight: 600; cursor: pointer;
+  }
+  .scale-track button.on { background: var(--accent); color: var(--accent-ink); }
+  .badge { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent); min-width: 1.5rem; text-align: right; }
+
+  .chip { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: .3rem .9rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  .chip:hover { background: var(--soft); }
+
+  .btn { border: 0; border-radius: 12px; padding: .8rem 1.3rem; font: inherit; font-weight: 600; font-size: 1rem; cursor: pointer; background: var(--accent); color: var(--accent-ink); min-height: 3rem; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+  .savebar { position: sticky; bottom: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); border-top: 1px solid var(--line); padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom, 0px)); }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--muted); flex: none; }
+  .st-loading .dot { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+  .st-success .dot { background: var(--ok); }
+  .st-error .dot { background: var(--err); }
+  .st-error #statusText { color: var(--err); }
+  .st-success #statusText { color: var(--ok); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .st-loading .dot { animation: none; } }
+
+  .banner { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: .8rem 1rem; font-size: .9rem; }
+  .note { color: var(--muted); font-size: .85rem; }
+  .rowbtn { width: 100%; display: grid; grid-template-columns: 1fr repeat(3, auto); gap: .9rem; text-align: left; background: none; border: 0; border-top: 1px solid var(--line); padding: .65rem .2rem; color: var(--ink); font: inherit; font-size: .9rem; cursor: pointer; font-variant-numeric: tabular-nums; }
+  .rowbtn:first-child { border-top: 0; }
+  .rowbtn:hover { background: var(--soft); }
+  .rowbtn .m { color: var(--muted); }
+</style>
+</head>
+
+<body>
+<div class="max-w-2xl mx-auto px-4 pt-6 pb-8">
+
+  <header class="flex flex-wrap items-center justify-between gap-3 mb-5">
+    <div>
+      <h1 id="title" class="text-2xl font-bold tracking-tight">Verbruik Warmtepomp</h1>
+      <p class="text-sm" style="color:var(--muted)">Gegevens in Google Sheets</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="account" class="text-sm hidden sm:inline" style="color:var(--muted)"></span>
+      <button id="loginBtn" class="btn" type="button">Inloggen met Google</button>
+      <button id="logoutBtn" class="btn ghost hidden" type="button">Uitloggen</button>
+    </div>
+  </header>
+
+  <div id="setupBanner" class="banner mb-4 hidden">
+    Vul eerst je Google <strong>clientId</strong> in het configuratieblok bovenaan dit bestand in.
+  </div>
+
+  <main id="form" class="grid gap-4">
+    <section id="placeholder" class="card">
+      <h2>Nog niet verbonden</h2>
+      <p class="note">Log in met Google. De invoervelden worden dan automatisch opgebouwd uit de kopregel (rij 1) van je spreadsheet.</p>
+    </section>
+  </main>
+
+  <section class="card mt-4" id="recentCard" hidden>
+    <h2>Laatste invoer</h2>
+    <div id="recent"></div>
+  </section>
+</div>
+
+<div class="savebar">
+  <div class="max-w-2xl mx-auto flex items-center justify-between gap-3">
+    <div id="statusWrap" class="flex items-center gap-2 min-w-0 text-sm st-idle" role="status" aria-live="polite">
+      <span class="dot"></span><span id="statusText" class="truncate">Log in om te beginnen</span>
+    </div>
+    <button id="saveBtn" class="btn" type="button" disabled>Opslaan in Google Sheets</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  document.title = CONFIG.title;
+  document.getElementById("title").textContent = CONFIG.title;
+
+  /* ---------------- Helpers ---------------- */
+  const $ = (s) => document.querySelector(s);
+  function h(tag, attrs = {}, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") el.className = v;
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) { if (kid != null) el.append(kid.nodeType ? kid : document.createTextNode(kid)); }
+    return el;
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const dagNaam = (iso) => new Date(iso + "T12:00:00").toLocaleDateString("nl-NL", { weekday: "long" }).toLowerCase();
+  const colLetter = (n) => { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+  const fmt = (v) => (typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v ?? ""));
+
+  function normDate(v) {
+    if (typeof v === "number" && v > 20000) return new Date(Math.round((v - 25569) * 864e5)).toISOString().slice(0, 10);
+    if (typeof v !== "string") return null;
+    const s = v.trim();
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
+    if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+    return null;
+  }
+
+  function setStatus(kind, text) {
+    $("#statusWrap").className = `flex items-center gap-2 min-w-0 text-sm st-${kind}`;
+    $("#statusText").textContent = text;
+  }
+
+  /* ---------------- Staat ---------------- */
+  const state = {
+    cols: [], ncols: 0, dateIdx: -1, dagIdx: -1, entries: [], lastRow: 0,
+    dateAsText: false, dateStyle: null, loaded: false, prefilled: false, sig: "",
+  };
+  const ctl = {};   // kolomindex -> { el, get, set, badge? }
+  let SHEET = CONFIG.sheetName.trim();
+
+  /* ---------------- Formulierbesturing ---------------- */
+  function numControl(c) {
+    const inp = h("input", { class: "inp", type: "number", inputmode: "decimal", step: "any", placeholder: c.last != null ? `vorige: ${fmt(c.last)}` : "" });
+    return {
+      el: c.unit ? h("div", { class: "unit" }, inp, h("span", {}, c.unit)) : inp,
+      get: () => (inp.value === "" ? "" : Number(inp.value)),
+      set: (v) => { const n = Number(String(v ?? "").replace(",", ".")); inp.value = v === "" || v == null || isNaN(n) ? "" : String(n); },
+    };
+  }
+
+  function scaleControl(min, max) {
+    let val = "";
+    const btns = [];
+    const track = h("div", { class: "scale-track", role: "group", style: `grid-template-columns: repeat(${max - min + 1}, 1fr)` });
+    const badge = h("span", { class: "badge" }, "–");
+    for (let n = min; n <= max; n++) {
+      const b = h("button", { type: "button", "aria-label": `Waarde ${n}`, "aria-pressed": "false", onclick: () => setNum(val === n ? "" : n) }, String(n));
+      btns.push(b); track.append(b);
+    }
+    function setNum(v) {
+      const n = Number(v);
+      val = v === "" || v == null || !Number.isInteger(n) || n < min || n > max ? "" : n;
+      btns.forEach((b, i) => {
+        b.classList.toggle("on", val !== "" && min + i <= val);
+        b.setAttribute("aria-pressed", String(val === min + i));
+      });
+      badge.textContent = val === "" ? "–" : String(val);
+    }
+    setNum("");
+    return { el: track, get: () => val, set: setNum, badge };
+  }
+
+  function yesnoControl(c) {
+    const listId = `dl-${c.idx}`;
+    const inp = h("input", { class: "inp", type: "text", list: listId, autocomplete: "off" });
+    const dl = h("datalist", { id: listId }, h("option", { value: "ja" }), h("option", { value: "nee" }));
+    const chips = h("div", { class: "flex gap-2 mt-2" },
+      h("button", { type: "button", class: "chip", onclick: () => (inp.value = "ja") }, "Ja"),
+      h("button", { type: "button", class: "chip", onclick: () => (inp.value = "nee") }, "Nee"),
+      h("button", { type: "button", class: "chip", onclick: () => (inp.value = "") }, "Leegmaken"));
+    return { el: h("div", {}, inp, dl, chips), get: () => inp.value.trim(), set: (v) => (inp.value = v == null ? "" : String(v)) };
+  }
+
+  function textControl(c, area) {
+    const inp = area ? h("textarea", { class: "inp" }) : h("input", { class: "inp", type: "text", autocomplete: "off", placeholder: c.last != null && !area ? `vorige: ${fmt(c.last)}` : "" });
+    return { el: inp, get: () => inp.value.trim(), set: (v) => (inp.value = v == null ? "" : String(v)) };
+  }
+
+  /* ---------------- Kolommen afleiden uit de kopregel ---------------- */
+  const NUM_RE = /kwh|\bkw\b|\bwh\b|temp|°|graad|stand|aantal|uren|uur\b|\bcop\b|m3|m³|liter|€|euro|prijs|kosten|verbruik|opbrengst|stroom|\bgas\b|energie|vermogen|minuten|%|dagen|tarief|opwek|levering|teruglever/i;
+  const AREA_RE = /opmerk|notitie|toelicht|omschrijv|commentaar|memo/i;
+
+  function inferColumns(headers, rows, formulaRows) {
+    const ncols = headers.length;
+    const samplesOf = (j) => rows.slice(-30).map((r) => r[j]).filter((v) => v !== undefined && v !== "");
+
+    let dateIdx = -1;
+    if (CONFIG.dateColumn) dateIdx = headers.findIndex((x) => x.trim().toLowerCase() === CONFIG.dateColumn.trim().toLowerCase());
+    if (dateIdx < 0) dateIdx = headers.findIndex((x) => /datum|date/i.test(x));
+    if (dateIdx < 0) { const s = samplesOf(0); if (s.length && s.every((v) => normDate(v))) dateIdx = 0; }
+    const dagIdx = headers.findIndex((x, j) => j !== dateIdx && /^dag$/i.test(x.trim()));
+
+    const cols = [];
+    for (let j = 0; j < ncols; j++) {
+      const header = headers[j].trim();
+      const c = { idx: j, header, label: header, unit: "", kind: "text", editable: true, last: null };
+      if (!header) { c.editable = false; c.kind = "skip"; cols.push(c); continue; }
+      const m = header.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      let paren = null;
+      if (m && m[1]) { c.label = m[1]; paren = m[2].trim(); }
+      const samples = samplesOf(j);
+      c.last = samples.length ? samples[samples.length - 1] : null;
+      const isFormula = formulaRows.slice(-5).some((r) => typeof r[j] === "string" && r[j].startsWith("="));
+
+      if (j === dateIdx) c.kind = "date";
+      else if (j === dagIdx) c.kind = "dag";
+      else if (isFormula) { c.kind = "formula"; c.editable = false; }
+      else {
+        const range = paren && paren.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+        if (range && Number(range[2]) - Number(range[1]) >= 1 && Number(range[2]) - Number(range[1]) <= 11) {
+          c.kind = "scale"; c.min = Number(range[1]); c.max = Number(range[2]); c.unit = "";
+        } else {
+          c.unit = paren && !range ? paren : "";
+          if (samples.length && samples.every((v) => typeof v === "number")) c.kind = "num";
+          else if (samples.length && samples.every((v) => /^(ja|nee|yes|no)$/i.test(String(v).trim()))) c.kind = "yesno";
+          else if (samples.length) c.kind = AREA_RE.test(header) ? "area" : "text";
+          else c.kind = AREA_RE.test(header) ? "area" : NUM_RE.test(header) ? "num" : "text";
+        }
+      }
+      cols.push(c);
+    }
+    return { cols, dateIdx, dagIdx };
+  }
+
+  /* ---------------- Formulier opbouwen ---------------- */
+  function buildForm() {
+    const root = $("#form");
+    root.replaceChildren();
+    for (const k of Object.keys(ctl)) delete ctl[k];
+
+    const mk = (c) => {
+      if (c.kind === "date") { const inp = h("input", { class: "inp", type: "date", required: true, onchange: () => onDateChange(true) }); return { el: inp, get: () => inp.value, set: (v) => (inp.value = v ?? "") }; }
+      if (c.kind === "dag") { const inp = h("input", { class: "inp", type: "text", readonly: true }); return { el: inp, get: () => inp.value, set: (v) => (inp.value = v ?? "") }; }
+      if (c.kind === "num") return numControl(c);
+      if (c.kind === "scale") return scaleControl(c.min, c.max);
+      if (c.kind === "yesno") return yesnoControl(c);
+      return textControl(c, c.kind === "area");
+    };
+    const field = (c) => {
+      const x = mk(c); ctl[c.idx] = x;
+      const sub = c.kind === "scale" ? `${c.min}–${c.max}` : "";
+      const right = x.badge ? x.badge : sub ? h("span", { class: "sub" }, sub) : null;
+      const wide = c.kind === "scale" || c.kind === "area";
+      return h("div", { class: wide ? "sm:col-span-2" : "" }, h("div", { class: "lbl" }, h("label", {}, c.label), right), x.el);
+    };
+
+    if (state.dateIdx >= 0) {
+      const dc = state.cols[state.dateIdx];
+      const grid = h("div", { class: "grid gap-4 sm:grid-cols-2" }, field(dc));
+      if (state.dagIdx >= 0) grid.append(field(state.cols[state.dagIdx]));
+      grid.append(h("p", { id: "dateHint", class: "note sm:col-span-2" }));
+      root.append(h("section", { class: "card" }, h("h2", {}, "Dag"), grid));
+    }
+    const rest = state.cols.filter((c) => c.editable && c.kind !== "date" && c.kind !== "dag");
+    if (rest.length) {
+      const grid = h("div", { class: "grid gap-4 sm:grid-cols-2" }, rest.map(field));
+      root.append(h("section", { class: "card" }, h("h2", {}, "Meting"), grid));
+    }
+    const formulas = state.cols.filter((c) => c.kind === "formula");
+    if (formulas.length) {
+      root.append(h("p", { class: "note px-1" }, `Berekende kolommen worden niet overschreven: ${formulas.map((c) => c.header).join(", ")}.`));
+    }
+    if (state.dateIdx >= 0) ctl[state.dateIdx].set(todayISO());
+    state.prefilled = false;
+  }
+
+  const dataCols = () => state.cols.filter((c) => c.editable && c.kind !== "date" && c.kind !== "dag");
+
+  function collect() {
+    const out = Array(state.ncols).fill("");
+    for (const c of state.cols) if (c.editable) out[c.idx] = ctl[c.idx].get();
+    if (state.dateIdx >= 0) {
+      if (!out[state.dateIdx]) { setStatus("error", "Vul een datum in."); return null; }
+      if (state.dagIdx >= 0) out[state.dagIdx] = dagNaam(out[state.dateIdx]);
+    }
+    if (dataCols().every((c) => out[c.idx] === "")) { setStatus("error", "Vul minstens één waarde in."); return null; }
+    return out;
+  }
+
+  /* ---------------- Authenticatie (Google Identity Services) ---------------- */
+  const SHEET_ID = (CONFIG.spreadsheet.match(/\/d\/([\w-]+)/) || [null, CONFIG.spreadsheet.trim()])[1];
+  const GID = (CONFIG.spreadsheet.match(/[#&?]gid=(\d+)/) || [])[1];
+  let tokenClient = null, accessToken = null, tokenExpiry = 0, signedIn = false, pending = null;
+
+  function waitForGoogle(ms = 8000) {
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      (function poll() {
+        if (window.google?.accounts?.oauth2) return resolve();
+        if (Date.now() - t0 > ms) return reject(new Error("Het Google-inlogscript kon niet worden geladen (internetverbinding of adblocker?)."));
+        setTimeout(poll, 100);
+      })();
+    });
+  }
+  function requestToken() {
+    return new Promise((resolve, reject) => { pending = { resolve, reject }; tokenClient.requestAccessToken({ prompt: "" }); });
+  }
+  async function ensureToken() {
+    if (accessToken && Date.now() < tokenExpiry) return accessToken;
+    return requestToken();
+  }
+
+  async function initAuth() {
+    if (CONFIG.clientId.startsWith("VUL-")) {
+      $("#setupBanner").classList.remove("hidden");
+      $("#loginBtn").disabled = true;
+      setStatus("idle", "clientId ontbreekt in de configuratie");
+      return;
+    }
+    await waitForGoogle();
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.clientId,
+      scope: CONFIG.scope,
+      callback: (r) => {
+        if (r.error) { pending?.reject(Object.assign(new Error(r.error_description || r.error), { code: r.error })); return; }
+        accessToken = r.access_token;
+        tokenExpiry = Date.now() + (Number(r.expires_in) - 60) * 1000;
+        sessionStorage.setItem("gtoken", JSON.stringify({ accessToken, tokenExpiry }));
+        signedIn = true;
+        pending?.resolve(accessToken);
+      },
+      error_callback: (e) => pending?.reject(Object.assign(new Error(e.message || e.type), { code: e.type })),
+    });
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("gtoken") || "null");
+      if (saved && Date.now() < saved.tokenExpiry) { accessToken = saved.accessToken; tokenExpiry = saved.tokenExpiry; signedIn = true; await afterLogin(); }
+    } catch (_) {}
+  }
+
+  async function login() {
+    try { setStatus("loading", "Inloggen..."); await requestToken(); await afterLogin(); }
+    catch (e) { setStatus("error", e.code === "popup_closed" ? "Inloggen geannuleerd." : `Inloggen mislukt: ${e.message}`); }
+  }
+
+  function logout() {
+    if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
+    accessToken = null; tokenExpiry = 0; signedIn = false;
+    sessionStorage.removeItem("gtoken");
+    state.entries = []; state.loaded = false; state.prefilled = false;
+    updateAuthUi(); renderRecent(); updateHint();
+    setStatus("idle", "Uitgelogd");
+  }
+
+  function updateAuthUi() {
+    $("#loginBtn").classList.toggle("hidden", signedIn);
+    $("#logoutBtn").classList.toggle("hidden", !signedIn);
+    $("#account").textContent = signedIn ? "Verbonden met Google" : "";
+    $("#saveBtn").disabled = !signedIn || !state.loaded;
+  }
+
+  async function afterLogin() {
+    updateAuthUi();
+    setStatus("loading", "Laden...");
+    try { await refresh(); setStatus("idle", `Verbonden met Google Sheets (${SHEET})`); }
+    catch (e) { setStatus("error", explain(e)); }
+  }
+
+  /* ---------------- Google Sheets API ---------------- */
+  const API = "https://sheets.googleapis.com/v4/spreadsheets";
+  const a1 = (a) => `'${SHEET.replace(/'/g, "''")}'!${a}`;
+  const rng = (a) => encodeURIComponent(a1(a));
+
+  async function sheets(method, path, body) {
+    const token = await ensureToken();
+    const res = await fetch(`${API}/${SHEET_ID}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { msg = (await res.json()).error?.message || msg; } catch (_) {}
+      if (res.status === 401) { accessToken = null; sessionStorage.removeItem("gtoken"); }
+      const err = new Error(msg); err.status = res.status; throw err;
+    }
+    return res.json();
+  }
+
+  function explain(e) {
+    if (/not supported for this document/i.test(e.message)) return "Dit is nog een Excel-bestand. Open het in Google Drive en kies Bestand > Opslaan als Google Spreadsheet; gebruik daarna het nieuwe adres in CONFIG.";
+    if (/unable to parse range/i.test(e.message)) return `Tabblad "${SHEET}" niet gevonden. Controleer sheetName.`;
+    if (e.status === 404) return "Spreadsheet niet gevonden. Controleer het adres in CONFIG.";
+    if (e.status === 403) return "Geen toegang. Zet de Google Sheets API aan, voeg jezelf toe als testgebruiker en log in met het account dat het bestand bezit of mag bewerken.";
+    if (e.status === 401) return "Sessie verlopen. Klik opnieuw op Opslaan of log opnieuw in.";
+    if (e.status === 429) return "Te veel verzoeken. Probeer het over een halve minuut opnieuw.";
+    return `Fout: ${e.message}`;
+  }
+
+  async function resolveSheet() {
+    if (SHEET) return;
+    const r = await sheets("GET", "?fields=sheets.properties(sheetId,title)");
+    const list = (r.sheets || []).map((s) => s.properties);
+    if (!list.length) throw new Error("Geen tabbladen gevonden in de spreadsheet.");
+    SHEET = (GID && list.find((p) => String(p.sheetId) === GID)?.title) || list[0].title;
+  }
+
+  async function refresh() {
+    await ensureToken();
+    await resolveSheet();
+    const [vr, fr] = await Promise.all([
+      sheets("GET", `/values/${rng("A1:AZ")}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`),
+      sheets("GET", `/values/${rng("A1:AZ")}?valueRenderOption=FORMULA`),
+    ]);
+    const values = vr.values || [];
+    const formulas = fr.values || [];
+    let headers = (values[0] || []).map((x) => String(x ?? ""));
+    while (headers.length && !headers[headers.length - 1].trim()) headers.pop();
+    if (!headers.length) throw new Error(`Rij 1 van tabblad "${SHEET}" is leeg. Zet daar de kolomkoppen neer.`);
+
+    const rows = values.slice(1);
+    const inf = inferColumns(headers, rows, formulas.slice(1));
+    const sig = JSON.stringify(inf.cols.map((c) => [c.header, c.kind, c.unit, c.min, c.max]));
+    state.cols = inf.cols; state.ncols = headers.length; state.dateIdx = inf.dateIdx; state.dagIdx = inf.dagIdx;
+    state.lastRow = values.length;
+
+    state.entries = [];
+    state.dateAsText = false; state.dateStyle = null;
+    for (let j = 1; j < values.length; j++) {
+      const vals = Array.from({ length: state.ncols }, (_, k) => values[j][k] ?? "");
+      const iso = state.dateIdx >= 0 ? normDate(vals[state.dateIdx]) : null;
+      state.entries.push({ row: j + 1, iso, vals });
+    }
+    if (state.dateIdx >= 0) {
+      for (let j = values.length - 1; j >= 1; j--) {
+        const d = values[j][state.dateIdx];
+        if (d !== undefined && d !== "") {
+          state.dateAsText = typeof d === "string";
+          const m = typeof d === "string" && d.match(/^(\d{1,2})([-\/.])(\d{1,2})\2(\d{4})$/);
+          state.dateStyle = m ? { dmy: true, sep: m[2] } : null;
+          break;
+        }
+      }
+    }
+    state.loaded = true;
+    if (sig !== state.sig) { state.sig = sig; buildForm(); }
+    updateAuthUi();
+    renderRecent();
+    onDateChange(false);
+  }
+
+  const findRow = (iso) => [...state.entries].reverse().find((e) => e.iso && e.iso === iso);
+
+  const writeDate = (iso) => {
+    if (!state.dateAsText) return iso;
+    if (state.dateStyle?.dmy) { const [y, m, d] = iso.split("-"); return [d, m, y].join(state.dateStyle.sep); }
+    return iso;
+  };
+
+  async function save() {
+    if (!signedIn || !state.loaded) return;
+    const vals = collect();
+    if (!vals) return;
+    $("#saveBtn").disabled = true;
+    setStatus("loading", "Opslaan...");
+    try {
+      await ensureToken();                     // eerst, binnen de klik (popup-blokkade)
+      await refresh();                         // altijd met de nieuwste stand werken
+      const iso = state.dateIdx >= 0 ? vals[state.dateIdx] : null;
+      const existing = iso ? findRow(iso) : null;
+      const row = existing ? existing.row : state.lastRow + 1;
+      if (iso) vals[state.dateIdx] = writeDate(iso);
+
+      // Schrijf alleen aaneengesloten groepen bewerkbare kolommen; berekende kolommen blijven onaangeroerd.
+      const data = [];
+      let start = null;
+      const flush = (end) => { if (start != null) { data.push({ range: a1(`${colLetter(start + 1)}${row}:${colLetter(end + 1)}${row}`), values: [vals.slice(start, end + 1)] }); start = null; } };
+      for (let j = 0; j < state.ncols; j++) {
+        if (state.cols[j].editable) { if (start == null) start = j; } else flush(j - 1);
+      }
+      flush(state.ncols - 1);
+
+      await sheets("POST", "/values:batchUpdate", { valueInputOption: state.dateAsText ? "RAW" : "USER_ENTERED", data });
+      await refresh();
+      setStatus("success", existing ? "Succesvol bijgewerkt in Google Sheets!" : "Nieuwe rij toegevoegd in Google Sheets!");
+    } catch (e) { setStatus("error", explain(e)); }
+    finally { $("#saveBtn").disabled = !signedIn || !state.loaded; }
+  }
+
+  /* ---------------- Datumlogica en overzicht ---------------- */
+  function updateHint() {
+    const hint = $("#dateHint");
+    if (!hint) return;
+    if (!signedIn || !state.loaded) { hint.textContent = ""; return; }
+    const e = findRow(ctl[state.dateIdx].get());
+    hint.textContent = e ? `Voor deze datum staat al een rij (rij ${e.row}). Opslaan werkt die bij.` : "Nieuwe datum: er wordt een rij onderaan toegevoegd.";
+  }
+
+  function onDateChange(fill = true) {
+    if (state.dateIdx < 0 || !ctl[state.dateIdx]) { return; }
+    const iso = ctl[state.dateIdx].get();
+    if (state.dagIdx >= 0 && ctl[state.dagIdx]) ctl[state.dagIdx].set(iso ? dagNaam(iso) : "");
+    const e = state.loaded ? findRow(iso) : null;
+    const fillFrom = (en) => { for (const c of dataCols()) ctl[c.idx].set(en.vals[c.idx] ?? ""); state.prefilled = true; };
+    if (e) { if (fill || !state.prefilled) fillFrom(e); }
+    else if (state.prefilled) { for (const c of dataCols()) ctl[c.idx].set(""); state.prefilled = false; }
+    updateHint();
+  }
+
+  function renderRecent() {
+    const box = $("#recent");
+    box.replaceChildren();
+    const shown = state.entries.filter((e) => e.vals.some((v) => v !== "")).slice(-7).reverse();
+    $("#recentCard").hidden = !shown.length || !state.loaded;
+    const extra = dataCols().slice(0, 3);
+    for (const e of shown) {
+      const head = state.dateIdx >= 0 ? `${state.dagIdx >= 0 ? e.vals[state.dagIdx] + " " : ""}${e.iso || fmt(e.vals[state.dateIdx])}` : `Rij ${e.row}`;
+      const kids = [h("span", {}, head), ...extra.map((c) => h("span", { class: "m" }, `${c.label} ${e.vals[c.idx] === "" ? "–" : fmt(e.vals[c.idx])}`))];
+      box.append(h("button", { type: "button", class: "rowbtn", onclick: () => {
+        if (!e.iso || !ctl[state.dateIdx]) return;
+        ctl[state.dateIdx].set(e.iso); state.prefilled = false; onDateChange(true); window.scrollTo({ top: 0, behavior: "smooth" });
+      } }, kids));
+    }
+  }
+
+  /* ---------------- Start ---------------- */
+  $("#loginBtn").addEventListener("click", login);
+  $("#logoutBtn").addEventListener("click", logout);
+  $("#saveBtn").addEventListener("click", save);
+  updateAuthUi();
+  initAuth().catch((e) => setStatus("error", `Initialisatie mislukt: ${e.message}`));
+})();
+</script>
+</body>
+</html>

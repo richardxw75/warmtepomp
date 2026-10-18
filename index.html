@@ -31,6 +31,17 @@ const CONFIG = {
   // Optioneel: kopnaam van de datumkolom. Laat leeg voor automatisch (kop met "datum" of "date").
   dateColumn: "",
 
+  // Optioneel: rijnummer van de kolomkoppen. Laat op 0 om de kopregel automatisch te vinden (rij met "datum").
+  headerRow: 0,
+
+  // Eenheid per groep (de rij boven de kolomkoppen). Voeg gerust toe, bijv. "Verbruik": "kWh".
+  unitByGroup: {
+    "Instelling": "°C",
+    "Temperatuur buiten": "°C",
+    "Temperatuur binnen": "°C",
+    "Verbruikskosten": "€",
+  },
+
   scope: "https://www.googleapis.com/auth/spreadsheets",
 };
 </script>
@@ -107,7 +118,7 @@ const CONFIG = {
   <header class="flex flex-wrap items-center justify-between gap-3 mb-5">
     <div>
       <h1 id="title" class="text-2xl font-bold tracking-tight">Verbruik Warmtepomp</h1>
-      <p class="text-sm" style="color:var(--muted)">Gegevens in Google Sheets</p>
+      <p id="subtitle" class="text-sm" style="color:var(--muted)">Gegevens in Google Sheets</p>
     </div>
     <div class="flex items-center gap-2">
       <span id="account" class="text-sm hidden sm:inline" style="color:var(--muted)"></span>
@@ -123,12 +134,12 @@ const CONFIG = {
   <main id="form" class="grid gap-4">
     <section id="placeholder" class="card">
       <h2>Nog niet verbonden</h2>
-      <p class="note">Log in met Google. De invoervelden worden dan automatisch opgebouwd uit de kopregel (rij 1) van je spreadsheet.</p>
+      <p class="note">Log in met Google. De invoervelden worden dan automatisch opgebouwd uit de kolomkoppen van je spreadsheet.</p>
     </section>
   </main>
 
   <section class="card mt-4" id="recentCard" hidden>
-    <h2>Laatste invoer</h2>
+    <h2>Laatste dagen</h2>
     <div id="recent"></div>
   </section>
 </div>
@@ -183,7 +194,7 @@ const CONFIG = {
 
   /* ---------------- Staat ---------------- */
   const state = {
-    cols: [], ncols: 0, dateIdx: -1, dagIdx: -1, entries: [], lastRow: 0,
+    cols: [], ncols: 0, dateIdx: -1, dagIdx: -1, entries: [], lastRow: 0, headerRow: 1, title: "", dagShort: false,
     dateAsText: false, dateStyle: null, loaded: false, prefilled: false, sig: "",
   };
   const ctl = {};   // kolomindex -> { el, get, set, badge? }
@@ -241,20 +252,20 @@ const CONFIG = {
   const NUM_RE = /kwh|\bkw\b|\bwh\b|temp|°|graad|stand|aantal|uren|uur\b|\bcop\b|m3|m³|liter|€|euro|prijs|kosten|verbruik|opbrengst|stroom|\bgas\b|energie|vermogen|minuten|%|dagen|tarief|opwek|levering|teruglever/i;
   const AREA_RE = /opmerk|notitie|toelicht|omschrijv|commentaar|memo/i;
 
-  function inferColumns(headers, rows, formulaRows) {
+  function inferColumns(headers, groups, rows, formulaRows) {
     const ncols = headers.length;
-    const samplesOf = (j) => rows.slice(-30).map((r) => r[j]).filter((v) => v !== undefined && v !== "");
+    const samplesOf = (j) => rows.slice(-40).map((r) => r[j]).filter((v) => v !== undefined && v !== "");
 
     let dateIdx = -1;
     if (CONFIG.dateColumn) dateIdx = headers.findIndex((x) => x.trim().toLowerCase() === CONFIG.dateColumn.trim().toLowerCase());
     if (dateIdx < 0) dateIdx = headers.findIndex((x) => /datum|date/i.test(x));
     if (dateIdx < 0) { const s = samplesOf(0); if (s.length && s.every((v) => normDate(v))) dateIdx = 0; }
-    const dagIdx = headers.findIndex((x, j) => j !== dateIdx && /^dag$/i.test(x.trim()));
+    const dagIdx = headers.findIndex((x, j) => j !== dateIdx && !groups[j] && /^dag$/i.test(x.trim()));
 
     const cols = [];
     for (let j = 0; j < ncols; j++) {
       const header = headers[j].trim();
-      const c = { idx: j, header, label: header, unit: "", kind: "text", editable: true, last: null };
+      const c = { idx: j, header, group: groups[j] || "", label: header, unit: "", kind: "text", editable: true, last: null, chips: [] };
       if (!header) { c.editable = false; c.kind = "skip"; cols.push(c); continue; }
       const m = header.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
       let paren = null;
@@ -262,6 +273,7 @@ const CONFIG = {
       const samples = samplesOf(j);
       c.last = samples.length ? samples[samples.length - 1] : null;
       const isFormula = formulaRows.slice(-5).some((r) => typeof r[j] === "string" && r[j].startsWith("="));
+      const unitDefault = (CONFIG.unitByGroup || {})[c.group] ?? "";
 
       if (j === dateIdx) c.kind = "date";
       else if (j === dagIdx) c.kind = "dag";
@@ -269,13 +281,17 @@ const CONFIG = {
       else {
         const range = paren && paren.match(/^(\d+)\s*[-–]\s*(\d+)$/);
         if (range && Number(range[2]) - Number(range[1]) >= 1 && Number(range[2]) - Number(range[1]) <= 11) {
-          c.kind = "scale"; c.min = Number(range[1]); c.max = Number(range[2]); c.unit = "";
+          c.kind = "scale"; c.min = Number(range[1]); c.max = Number(range[2]);
         } else {
-          c.unit = paren && !range ? paren : "";
-          if (samples.length && samples.every((v) => typeof v === "number")) c.kind = "num";
+          c.unit = paren && !range ? paren : unitDefault;
+          const nums = samples.filter((v) => typeof v === "number");
+          const strs = samples.filter((v) => typeof v === "string");
+          if (samples.length && nums.length === samples.length) c.kind = "num";
+          else if (nums.length && strs.length) { c.kind = "textnum"; c.chips = [...new Set(strs.map((s) => s.trim()))].slice(0, 3); }
           else if (samples.length && samples.every((v) => /^(ja|nee|yes|no)$/i.test(String(v).trim()))) c.kind = "yesno";
           else if (samples.length) c.kind = AREA_RE.test(header) ? "area" : "text";
-          else c.kind = AREA_RE.test(header) ? "area" : NUM_RE.test(header) ? "num" : "text";
+          else c.kind = AREA_RE.test(header) ? "area" : NUM_RE.test(`${c.group} ${header}`) ? "num" : "text";
+          if (c.kind !== "num" && c.kind !== "textnum") c.unit = "";
         }
       }
       cols.push(c);
@@ -283,7 +299,23 @@ const CONFIG = {
     return { cols, dateIdx, dagIdx };
   }
 
+  function textnumControl(c) {
+    const inp = h("input", { class: "inp", type: "text", autocomplete: "off", inputmode: "decimal", placeholder: c.last != null ? `vorige: ${fmt(c.last)}` : "" });
+    const chips = h("div", { class: "flex gap-2 mt-2 flex-wrap" },
+      c.chips.map((t) => h("button", { type: "button", class: "chip", onclick: () => (inp.value = t) }, t)),
+      h("button", { type: "button", class: "chip", onclick: () => (inp.value = "") }, "Leegmaken"));
+    return {
+      el: h("div", {}, c.unit ? h("div", { class: "unit" }, inp, h("span", {}, c.unit)) : inp, chips),
+      get: () => { const t = inp.value.trim(); return /^-?\d+([.,]\d+)?$/.test(t) ? Number(t.replace(",", ".")) : t; },
+      set: (v) => (inp.value = v == null ? "" : String(v)),
+    };
+  }
+
   /* ---------------- Formulier opbouwen ---------------- */
+  const dataCols = () => state.cols.filter((c) => c.editable && c.kind !== "date" && c.kind !== "dag");
+  const DAG_KORT = ["zo", "ma", "di", "wo", "do", "vr", "za"];
+  const dagLabel = (iso) => (state.dagShort ? DAG_KORT[new Date(iso + "T12:00:00").getDay()] : dagNaam(iso));
+
   function buildForm() {
     const root = $("#form");
     root.replaceChildren();
@@ -293,6 +325,7 @@ const CONFIG = {
       if (c.kind === "date") { const inp = h("input", { class: "inp", type: "date", required: true, onchange: () => onDateChange(true) }); return { el: inp, get: () => inp.value, set: (v) => (inp.value = v ?? "") }; }
       if (c.kind === "dag") { const inp = h("input", { class: "inp", type: "text", readonly: true }); return { el: inp, get: () => inp.value, set: (v) => (inp.value = v ?? "") }; }
       if (c.kind === "num") return numControl(c);
+      if (c.kind === "textnum") return textnumControl(c);
       if (c.kind === "scale") return scaleControl(c.min, c.max);
       if (c.kind === "yesno") return yesnoControl(c);
       return textControl(c, c.kind === "area");
@@ -306,33 +339,33 @@ const CONFIG = {
     };
 
     if (state.dateIdx >= 0) {
-      const dc = state.cols[state.dateIdx];
-      const grid = h("div", { class: "grid gap-4 sm:grid-cols-2" }, field(dc));
+      const grid = h("div", { class: "grid gap-4 sm:grid-cols-2" }, field(state.cols[state.dateIdx]));
       if (state.dagIdx >= 0) grid.append(field(state.cols[state.dagIdx]));
       grid.append(h("p", { id: "dateHint", class: "note sm:col-span-2" }));
       root.append(h("section", { class: "card" }, h("h2", {}, "Dag"), grid));
     }
-    const rest = state.cols.filter((c) => c.editable && c.kind !== "date" && c.kind !== "dag");
-    if (rest.length) {
-      const grid = h("div", { class: "grid gap-4 sm:grid-cols-2" }, rest.map(field));
-      root.append(h("section", { class: "card" }, h("h2", {}, "Meting"), grid));
+    const groups = [];
+    for (const c of dataCols()) {
+      const key = c.group || "Meting";
+      let g = groups.find((x) => x.key === key);
+      if (!g) groups.push((g = { key, cols: [] }));
+      g.cols.push(c);
+    }
+    for (const g of groups) {
+      root.append(h("section", { class: "card" }, h("h2", {}, g.key), h("div", { class: "grid gap-4 sm:grid-cols-2" }, g.cols.map(field))));
     }
     const formulas = state.cols.filter((c) => c.kind === "formula");
-    if (formulas.length) {
-      root.append(h("p", { class: "note px-1" }, `Berekende kolommen worden niet overschreven: ${formulas.map((c) => c.header).join(", ")}.`));
-    }
+    if (formulas.length) root.append(h("p", { class: "note px-1" }, `Berekende kolommen worden niet overschreven: ${formulas.map((c) => c.header).join(", ")}.`));
     if (state.dateIdx >= 0) ctl[state.dateIdx].set(todayISO());
     state.prefilled = false;
   }
-
-  const dataCols = () => state.cols.filter((c) => c.editable && c.kind !== "date" && c.kind !== "dag");
 
   function collect() {
     const out = Array(state.ncols).fill("");
     for (const c of state.cols) if (c.editable) out[c.idx] = ctl[c.idx].get();
     if (state.dateIdx >= 0) {
       if (!out[state.dateIdx]) { setStatus("error", "Vul een datum in."); return null; }
-      if (state.dagIdx >= 0) out[state.dagIdx] = dagNaam(out[state.dateIdx]);
+      if (state.dagIdx >= 0) out[state.dagIdx] = dagLabel(out[state.dateIdx]);
     }
     if (dataCols().every((c) => out[c.idx] === "")) { setStatus("error", "Vul minstens één waarde in."); return null; }
     return out;
@@ -464,25 +497,41 @@ const CONFIG = {
     ]);
     const values = vr.values || [];
     const formulas = fr.values || [];
-    let headers = (values[0] || []).map((x) => String(x ?? ""));
-    while (headers.length && !headers[headers.length - 1].trim()) headers.pop();
-    if (!headers.length) throw new Error(`Rij 1 van tabblad "${SHEET}" is leeg. Zet daar de kolomkoppen neer.`);
 
-    const rows = values.slice(1);
-    const inf = inferColumns(headers, rows, formulas.slice(1));
-    const sig = JSON.stringify(inf.cols.map((c) => [c.header, c.kind, c.unit, c.min, c.max]));
+    // Kopregel: vast opgegeven, of de eerste rij (bovenaan) met een kolom "datum"
+    let hIdx = CONFIG.headerRow ? CONFIG.headerRow - 1 : values.slice(0, 15).findIndex((r) => r.some((x) => /^(datum|date)$/i.test(String(x).trim())));
+    if (hIdx < 0) hIdx = 0;
+    const headers = (values[hIdx] || []).map((x) => String(x ?? ""));
+    while (headers.length && !headers[headers.length - 1].trim()) headers.pop();
+    if (!headers.length) throw new Error(`Geen kopregel gevonden in tabblad "${SHEET}". Zet CONFIG.headerRow op het rijnummer van de kolomkoppen.`);
+
+    // Groeplabels (rij boven de kopregel, vaak samengevoegde cellen: doorvullen naar rechts)
+    const groupRow = hIdx > 0 ? values[hIdx - 1] || [] : [];
+    const groups = [];
+    let g = "";
+    for (let j = 0; j < headers.length; j++) {
+      const v = String(groupRow[j] ?? "").trim();
+      if (v) g = v; else if (!headers[j].trim()) g = "";
+      groups[j] = g;
+    }
+    state.title = hIdx > 1 ? (values[0] || []).find((x) => String(x).trim() !== "") ?? "" : "";
+
+    const rows = values.slice(hIdx + 1);
+    const inf = inferColumns(headers, groups, rows, formulas.slice(hIdx + 1));
+    const sig = JSON.stringify(inf.cols.map((c) => [c.header, c.group, c.kind, c.unit, c.min, c.max, c.chips]));
     state.cols = inf.cols; state.ncols = headers.length; state.dateIdx = inf.dateIdx; state.dagIdx = inf.dagIdx;
-    state.lastRow = values.length;
+    state.headerRow = hIdx + 1;
+    state.lastRow = Math.max(values.length, hIdx + 1);
 
     state.entries = [];
-    state.dateAsText = false; state.dateStyle = null;
-    for (let j = 1; j < values.length; j++) {
+    state.dateAsText = false; state.dateStyle = null; state.dagShort = false;
+    for (let j = hIdx + 1; j < values.length; j++) {
       const vals = Array.from({ length: state.ncols }, (_, k) => values[j][k] ?? "");
       const iso = state.dateIdx >= 0 ? normDate(vals[state.dateIdx]) : null;
       state.entries.push({ row: j + 1, iso, vals });
     }
     if (state.dateIdx >= 0) {
-      for (let j = values.length - 1; j >= 1; j--) {
+      for (let j = values.length - 1; j > hIdx; j--) {
         const d = values[j][state.dateIdx];
         if (d !== undefined && d !== "") {
           state.dateAsText = typeof d === "string";
@@ -492,10 +541,14 @@ const CONFIG = {
         }
       }
     }
+    if (state.dagIdx >= 0) {
+      const ds = rows.map((r) => r[state.dagIdx]).filter((v) => typeof v === "string" && v.trim());
+      state.dagShort = ds.length > 0 && ds.every((v) => v.trim().length <= 3);
+    }
     state.loaded = true;
+    $("#subtitle").textContent = state.title ? String(state.title) : "Gegevens in Google Sheets";
     if (sig !== state.sig) { state.sig = sig; buildForm(); }
     updateAuthUi();
-    renderRecent();
     onDateChange(false);
   }
 
@@ -520,14 +573,16 @@ const CONFIG = {
       const existing = iso ? findRow(iso) : null;
       const row = existing ? existing.row : state.lastRow + 1;
       if (iso) vals[state.dateIdx] = writeDate(iso);
+      if (state.dagIdx >= 0 && iso) vals[state.dagIdx] = dagLabel(iso);
 
-      // Schrijf alleen aaneengesloten groepen bewerkbare kolommen; berekende kolommen blijven onaangeroerd.
+      // Bestaande rij: dag en datum staan er al en blijven onaangeroerd.
+      // Berekende kolommen worden nooit beschreven. Alleen aaneengesloten groepen kolommen schrijven.
+      const skip = new Set(existing ? [state.dateIdx, state.dagIdx] : []);
+      const writable = (j) => state.cols[j].editable && !skip.has(j);
       const data = [];
       let start = null;
       const flush = (end) => { if (start != null) { data.push({ range: a1(`${colLetter(start + 1)}${row}:${colLetter(end + 1)}${row}`), values: [vals.slice(start, end + 1)] }); start = null; } };
-      for (let j = 0; j < state.ncols; j++) {
-        if (state.cols[j].editable) { if (start == null) start = j; } else flush(j - 1);
-      }
+      for (let j = 0; j < state.ncols; j++) { if (writable(j)) { if (start == null) start = j; } else flush(j - 1); }
       flush(state.ncols - 1);
 
       await sheets("POST", "/values:batchUpdate", { valueInputOption: state.dateAsText ? "RAW" : "USER_ENTERED", data });
@@ -543,24 +598,30 @@ const CONFIG = {
     if (!hint) return;
     if (!signedIn || !state.loaded) { hint.textContent = ""; return; }
     const e = findRow(ctl[state.dateIdx].get());
-    hint.textContent = e ? `Voor deze datum staat al een rij (rij ${e.row}). Opslaan werkt die bij.` : "Nieuwe datum: er wordt een rij onderaan toegevoegd.";
+    hint.textContent = e ? `Deze dag staat al in de sheet (rij ${e.row}). Opslaan vult die rij aan of werkt hem bij.` : "Deze datum staat nog niet in de sheet: er wordt een rij onderaan toegevoegd.";
   }
 
   function onDateChange(fill = true) {
-    if (state.dateIdx < 0 || !ctl[state.dateIdx]) { return; }
-    const iso = ctl[state.dateIdx].get();
-    if (state.dagIdx >= 0 && ctl[state.dagIdx]) ctl[state.dagIdx].set(iso ? dagNaam(iso) : "");
-    const e = state.loaded ? findRow(iso) : null;
-    const fillFrom = (en) => { for (const c of dataCols()) ctl[c.idx].set(en.vals[c.idx] ?? ""); state.prefilled = true; };
-    if (e) { if (fill || !state.prefilled) fillFrom(e); }
-    else if (state.prefilled) { for (const c of dataCols()) ctl[c.idx].set(""); state.prefilled = false; }
-    updateHint();
+    if (state.dateIdx >= 0 && ctl[state.dateIdx]) {
+      const iso = ctl[state.dateIdx].get();
+      if (state.dagIdx >= 0 && ctl[state.dagIdx]) ctl[state.dagIdx].set(iso ? dagLabel(iso) : "");
+      const e = state.loaded ? findRow(iso) : null;
+      const fillFrom = (en) => { for (const c of dataCols()) ctl[c.idx].set(en.vals[c.idx] ?? ""); state.prefilled = true; };
+      if (e) { if (fill || !state.prefilled) fillFrom(e); }
+      else if (state.prefilled) { for (const c of dataCols()) ctl[c.idx].set(""); state.prefilled = false; }
+      updateHint();
+    }
+    renderRecent();
   }
 
+  // De zeven dagen tot en met de gekozen datum, met de eerste drie invoerkolommen.
   function renderRecent() {
     const box = $("#recent");
     box.replaceChildren();
-    const shown = state.entries.filter((e) => e.vals.some((v) => v !== "")).slice(-7).reverse();
+    const sel = state.dateIdx >= 0 && ctl[state.dateIdx] ? ctl[state.dateIdx].get() : "";
+    let list = state.entries;
+    if (state.dateIdx >= 0 && sel) list = list.filter((e) => e.iso && e.iso <= sel);
+    const shown = list.slice(-7).reverse();
     $("#recentCard").hidden = !shown.length || !state.loaded;
     const extra = dataCols().slice(0, 3);
     for (const e of shown) {
